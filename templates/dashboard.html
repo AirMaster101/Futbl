@@ -332,13 +332,126 @@
             color: #6c757d;
             text-align: center;
         }
+
+        .ocr-selector {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .ocr-selector h5 {
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 10px;
+        }
+
+        .ocr-options {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .ocr-option {
+            display: flex;
+            align-items: center;
+            padding: 10px 12px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 2px solid transparent;
+        }
+
+        .ocr-option:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .ocr-option.active {
+            border-color: #28a745;
+            background: rgba(40, 167, 69, 0.2);
+        }
+
+        .ocr-option.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .ocr-option input[type="radio"] {
+            display: none;
+        }
+
+        .ocr-option-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #6c757d;
+            margin-right: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ocr-option.active .ocr-option-dot {
+            border-color: #28a745;
+        }
+
+        .ocr-option.active .ocr-option-dot::after {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+        }
+
+        .ocr-option-label {
+            flex-grow: 1;
+            font-weight: 500;
+        }
+
+        .ocr-option-status {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: rgba(108, 117, 125, 0.5);
+            color: #aaa;
+        }
+
+        .ocr-option.active .ocr-option-status {
+            background: rgba(40, 167, 69, 0.5);
+            color: #fff;
+        }
+
+        .ocr-option.disabled .ocr-option-status {
+            background: rgba(220, 53, 69, 0.3);
+            color: #dc3545;
+        }
+
+        .ocr-switching {
+            font-size: 12px;
+            color: #ffc107;
+            margin-top: 8px;
+            display: none;
+        }
+
+        .ocr-switching.visible {
+            display: block;
+        }
+
+        .navbar-ocr-badge {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.2);
+            margin-left: 10px;
+        }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-dark">
         <div class="container">
             <span class="navbar-brand">&#9917; Football Player Tracking</span>
-            <span class="text-white-50">YOLO11 + ByteTrack + PaddleOCR</span>
+            <span class="text-white-50">YOLO11 + ByteTrack + <span id="navbarOcrType">OCR</span></span>
         </div>
     </nav>
 
@@ -424,6 +537,28 @@
                     <div class="no-players" id="noPlayers">
                         <div class="no-players-icon">&#128694;</div>
                         <p>Waiting for players to be detected...</p>
+                    </div>
+
+                    <div class="ocr-selector">
+                        <h5>OCR Engine</h5>
+                        <div class="ocr-options" id="ocrOptions">
+                            <div class="ocr-option" data-ocr="parseq">
+                                <div class="ocr-option-dot"></div>
+                                <span class="ocr-option-label">PARSeq</span>
+                                <span class="ocr-option-status">checking...</span>
+                            </div>
+                            <div class="ocr-option" data-ocr="easyocr">
+                                <div class="ocr-option-dot"></div>
+                                <span class="ocr-option-label">EasyOCR</span>
+                                <span class="ocr-option-status">checking...</span>
+                            </div>
+                            <div class="ocr-option" data-ocr="paddleocr">
+                                <div class="ocr-option-dot"></div>
+                                <span class="ocr-option-label">PaddleOCR</span>
+                                <span class="ocr-option-status">checking...</span>
+                            </div>
+                        </div>
+                        <div class="ocr-switching" id="ocrSwitching">Switching OCR engine...</div>
                     </div>
                 </div>
             </div>
@@ -656,6 +791,94 @@
         // Start polling
         setInterval(updateStatus, 1000);
         updateStatus();
+
+        // OCR Engine Selection
+        const ocrOptions = document.getElementById('ocrOptions');
+        const ocrSwitching = document.getElementById('ocrSwitching');
+        const navbarOcrType = document.getElementById('navbarOcrType');
+        let currentOcr = null;
+        let availableOcr = {};
+
+        const ocrDisplayNames = {
+            'parseq': 'PARSeq',
+            'easyocr': 'EasyOCR',
+            'paddleocr': 'PaddleOCR'
+        };
+
+        function updateOcrUI() {
+            const options = ocrOptions.querySelectorAll('.ocr-option');
+            options.forEach(option => {
+                const ocrType = option.dataset.ocr;
+                const statusEl = option.querySelector('.ocr-option-status');
+                const isAvailable = availableOcr[ocrType];
+                const isActive = ocrType === currentOcr;
+
+                option.classList.toggle('active', isActive);
+                option.classList.toggle('disabled', !isAvailable);
+
+                if (isActive) {
+                    statusEl.textContent = 'active';
+                } else if (isAvailable) {
+                    statusEl.textContent = 'available';
+                } else {
+                    statusEl.textContent = 'not installed';
+                }
+            });
+
+            // Update navbar
+            navbarOcrType.textContent = ocrDisplayNames[currentOcr] || 'OCR';
+        }
+
+        function fetchOcrEngines() {
+            fetch('/ocr_engines')
+                .then(response => response.json())
+                .then(data => {
+                    availableOcr = data.available;
+                    currentOcr = data.current;
+                    updateOcrUI();
+                })
+                .catch(err => console.error('OCR engines fetch error:', err));
+        }
+
+        function switchOcr(ocrType) {
+            if (ocrType === currentOcr) return;
+            if (!availableOcr[ocrType]) return;
+
+            ocrSwitching.classList.add('visible');
+
+            fetch('/switch_ocr', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ocr_type: ocrType })
+            })
+            .then(response => response.json())
+            .then(data => {
+                ocrSwitching.classList.remove('visible');
+                if (data.success) {
+                    currentOcr = data.current;
+                    updateOcrUI();
+                } else {
+                    alert('Failed to switch OCR: ' + data.message);
+                }
+            })
+            .catch(err => {
+                ocrSwitching.classList.remove('visible');
+                console.error('OCR switch error:', err);
+            });
+        }
+
+        // Add click handlers for OCR options
+        ocrOptions.querySelectorAll('.ocr-option').forEach(option => {
+            option.addEventListener('click', () => {
+                const ocrType = option.dataset.ocr;
+                if (!option.classList.contains('disabled')) {
+                    switchOcr(ocrType);
+                }
+            });
+        });
+
+        // Fetch OCR engines on load
+        fetchOcrEngines();
     </script>
 </body>
 </html>

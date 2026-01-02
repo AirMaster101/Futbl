@@ -161,13 +161,32 @@ class VideoCamera:
 
     def _init_ocr(self):
         """Initialize OCR for jersey number recognition."""
-        # Debug: create folder for saving OCR crops
         import os
         self.debug_dir = "ocr_debug"
         os.makedirs(self.debug_dir, exist_ok=True)
         self.ocr_attempt_count = 0
 
-        # Try EasyOCR first (better for single digits on jerseys)
+        # Try PARSeq first (state-of-the-art, fast, accurate for short text)
+        try:
+            import torch
+            print("Loading PARSeq model...")
+            self.parseq_model = torch.hub.load('baudm/parseq', 'parseq', pretrained=True, trust_repo=True).eval()
+            # Get image transform
+            from strhub.data.module import SceneTextDataModule
+            self.parseq_transform = SceneTextDataModule.get_transform(self.parseq_model.hparams.img_size)
+            self.ocr_type = 'parseq'
+            # Use GPU if available
+            self.parseq_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.parseq_model = self.parseq_model.to(self.parseq_device)
+            print(f"PARSeq initialized successfully (device: {self.parseq_device})")
+            self.ocr = self.parseq_model  # For compatibility checks
+            return
+        except ImportError as e:
+            print(f"PARSeq not available ({e}), trying EasyOCR...")
+        except Exception as e:
+            print(f"PARSeq init failed: {e}, trying EasyOCR...")
+
+        # Fallback to EasyOCR
         try:
             import easyocr
             self.ocr = easyocr.Reader(['en'], gpu=False, verbose=False)
@@ -189,6 +208,94 @@ class VideoCamera:
             print(f"Warning: PaddleOCR initialization failed: {e}")
             self.ocr = None
             self.ocr_type = None
+
+    def get_available_ocr_engines(self) -> Dict[str, bool]:
+        """Get list of available OCR engines and their availability status."""
+        available = {}
+
+        # Check PARSeq
+        try:
+            import torch
+            # Check if parseq can be loaded (it may be cached)
+            available['parseq'] = True
+        except ImportError:
+            available['parseq'] = False
+
+        # Check EasyOCR
+        try:
+            import easyocr
+            available['easyocr'] = True
+        except ImportError:
+            available['easyocr'] = False
+
+        # Check PaddleOCR
+        try:
+            from paddleocr import PaddleOCR
+            available['paddleocr'] = True
+        except ImportError:
+            available['paddleocr'] = False
+
+        return available
+
+    def switch_ocr(self, ocr_type: str) -> Tuple[bool, str]:
+        """
+        Switch to a different OCR engine.
+
+        Args:
+            ocr_type: One of 'parseq', 'easyocr', 'paddleocr'
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        if ocr_type == self.ocr_type:
+            return True, f"Already using {ocr_type}"
+
+        with self.lock:
+            old_type = self.ocr_type
+
+            if ocr_type == 'parseq':
+                try:
+                    import torch
+                    print("Switching to PARSeq...")
+                    self.parseq_model = torch.hub.load('baudm/parseq', 'parseq', pretrained=True, trust_repo=True).eval()
+                    from strhub.data.module import SceneTextDataModule
+                    self.parseq_transform = SceneTextDataModule.get_transform(self.parseq_model.hparams.img_size)
+                    self.parseq_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    self.parseq_model = self.parseq_model.to(self.parseq_device)
+                    self.ocr_type = 'parseq'
+                    self.ocr = self.parseq_model
+                    print(f"Switched to PARSeq (device: {self.parseq_device})")
+                    return True, f"Switched to PARSeq (device: {self.parseq_device})"
+                except Exception as e:
+                    print(f"Failed to switch to PARSeq: {e}")
+                    return False, f"Failed to switch to PARSeq: {e}"
+
+            elif ocr_type == 'easyocr':
+                try:
+                    import easyocr
+                    print("Switching to EasyOCR...")
+                    self.ocr = easyocr.Reader(['en'], gpu=False, verbose=False)
+                    self.ocr_type = 'easyocr'
+                    print("Switched to EasyOCR")
+                    return True, "Switched to EasyOCR"
+                except Exception as e:
+                    print(f"Failed to switch to EasyOCR: {e}")
+                    return False, f"Failed to switch to EasyOCR: {e}"
+
+            elif ocr_type == 'paddleocr':
+                try:
+                    from paddleocr import PaddleOCR
+                    print("Switching to PaddleOCR...")
+                    self.ocr = PaddleOCR(lang='en')
+                    self.ocr_type = 'paddleocr'
+                    print("Switched to PaddleOCR")
+                    return True, "Switched to PaddleOCR"
+                except Exception as e:
+                    print(f"Failed to switch to PaddleOCR: {e}")
+                    return False, f"Failed to switch to PaddleOCR: {e}"
+
+            else:
+                return False, f"Unknown OCR type: {ocr_type}"
 
     def _is_on_green_field(self, frame: np.ndarray, bbox: np.ndarray) -> bool:
         """Check if detection is on the green playing field."""
@@ -432,16 +539,46 @@ class VideoCamera:
             best_number = None
             best_conf = 0.0
 
+            if save_debug and hasattr(self, 'debug_dir'):
+                self.ocr_attempt_count += 1
+                debug_path = f"{self.debug_dir}/ocr_{self.ocr_attempt_count:04d}_{debug_label}.jpg"
+                cv2.imwrite(debug_path, image if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR))
+
             # Use appropriate OCR based on type
-            if self.ocr_type == 'easyocr':
+            if self.ocr_type == 'parseq':
+                import torch
+                # Convert to PIL Image for PARSeq transform
+                pil_image = Image.fromarray(rgb_image)
+                # Apply transform and add batch dimension
+                img_tensor = self.parseq_transform(pil_image).unsqueeze(0).to(self.parseq_device)
+
+                # Run inference
+                with torch.no_grad():
+                    logits = self.parseq_model(img_tensor)
+                    pred = logits.softmax(-1)
+                    labels, confidences = self.parseq_model.tokenizer.decode(pred)
+
+                text = labels[0] if labels else ""
+                # PARSeq returns per-character confidence, we take the mean
+                conf = float(confidences[0].mean()) if confidences and len(confidences[0]) > 0 else 0.0
+
+                if save_debug:
+                    print(f"[OCR Debug] PARSeq: '{text}' (conf: {conf:.3f})")
+
+                # Extract digits from recognized text
+                digits = ''.join(c for c in str(text) if c.isdigit())
+                if digits and len(digits) <= 2:
+                    num = int(digits)
+                    if 1 <= num <= 99:
+                        best_number = digits
+                        best_conf = conf
+
+            elif self.ocr_type == 'easyocr':
                 # EasyOCR returns list of (bbox, text, conf)
                 results = self.ocr.readtext(rgb_image, detail=1, paragraph=False)
 
-                if save_debug and hasattr(self, 'debug_dir'):
-                    self.ocr_attempt_count += 1
-                    debug_path = f"{self.debug_dir}/ocr_{self.ocr_attempt_count:04d}_{debug_label}.jpg"
-                    cv2.imwrite(debug_path, image if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR))
-                    print(f"[OCR Debug] Saved: {debug_path}, Results: {results}")
+                if save_debug:
+                    print(f"[OCR Debug] EasyOCR results: {results}")
 
                 for detection in results:
                     if len(detection) >= 3:
@@ -456,15 +593,12 @@ class VideoCamera:
                                 best_number = digits
                                 best_conf = conf
 
-            else:
+            elif self.ocr_type == 'paddleocr':
                 # PaddleOCR
                 results = self.ocr.ocr(rgb_image)
 
-                if save_debug and hasattr(self, 'debug_dir'):
-                    self.ocr_attempt_count += 1
-                    debug_path = f"{self.debug_dir}/ocr_{self.ocr_attempt_count:04d}_{debug_label}.jpg"
-                    cv2.imwrite(debug_path, image if len(image.shape) == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR))
-                    print(f"[OCR Debug] Saved: {debug_path}, Results: {results}")
+                if save_debug:
+                    print(f"[OCR Debug] PaddleOCR results: {results}")
 
                 if results and isinstance(results, list) and len(results) > 0:
                     result = results[0]

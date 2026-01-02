@@ -2,6 +2,17 @@ flask>=2.3.0
 ultralytics>=8.0.0
 opencv-python>=4.8.0
 numpy>=1.24.0
-easyocr>=1.7.0
 supervision>=0.16.0
 Pillow>=10.0.0
+
+# OCR options (PARSeq is preferred, others are fallbacks)
+torch>=2.0.0
+torchvision>=0.15.0
+timm>=0.9.0
+pytorch_lightning>=2.0.0
+nltk>=3.8.0
+lmdb>=1.4.0
+# PARSeq is loaded via torch.hub from baudm/parseq
+
+# Fallback OCR options
+easyocr>=1.7.0

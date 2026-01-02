@@ -182,6 +182,43 @@ def reset():
     return jsonify({'success': True})
 
 
+@app.route('/ocr_engines')
+def ocr_engines():
+    """Get available OCR engines and current selection."""
+    cam = get_camera()
+    if cam is None:
+        return jsonify({
+            'available': {},
+            'current': None
+        })
+
+    return jsonify({
+        'available': cam.get_available_ocr_engines(),
+        'current': cam.ocr_type
+    })
+
+
+@app.route('/switch_ocr', methods=['POST'])
+def switch_ocr():
+    """Switch to a different OCR engine."""
+    cam = get_camera()
+    if cam is None:
+        return jsonify({'error': 'No video loaded'}), 404
+
+    data = request.get_json()
+    if not data or 'ocr_type' not in data:
+        return jsonify({'error': 'OCR type required'}), 400
+
+    ocr_type = data['ocr_type']
+    success, message = cam.switch_ocr(ocr_type)
+
+    return jsonify({
+        'success': success,
+        'message': message,
+        'current': cam.ocr_type
+    })
+
+
 if __name__ == '__main__':
     # Ensure upload directory exists
     os.makedirs('uploads', exist_ok=True)
