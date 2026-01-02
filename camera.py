@@ -116,9 +116,16 @@ class VideoCamera:
         self.lock = threading.Lock()
 
         # Fixed 8 player slots (P1-P8) - IDs never change!
+        # P1-P4 = RED team, P5-P8 = TURQUOISE team
         self.players: Dict[int, PlayerTrack] = {}
         for i in range(1, self.MAX_PLAYERS + 1):
-            self.players[i] = PlayerTrack(player_id=i)
+            player = PlayerTrack(player_id=i)
+            # Pre-assign team based on slot - this is PERMANENT
+            if i <= 4:
+                player.team = TeamType.TEAM_RED
+            else:
+                player.team = TeamType.TEAM_TURQUOISE
+            self.players[i] = player
 
         # Map ByteTrack tracker_id -> our fixed player_id
         self.tracker_to_player: Dict[int, int] = {}
@@ -130,11 +137,11 @@ class VideoCamera:
         self.model = YOLO("yolo11l.pt")
 
         # Initialize ByteTrack tracker via supervision
-        # Balance between keeping tracks and allowing new detections
+        # Use stable default settings - don't over-tune
         self.tracker = sv.ByteTrack(
-            track_activation_threshold=0.1,   # Very low - catch all detections
+            track_activation_threshold=0.25,  # Default-ish, not too aggressive
             lost_track_buffer=30,             # Keep tracks for 1 second at 30fps
-            minimum_matching_threshold=0.6,   # Balanced matching
+            minimum_matching_threshold=0.8,   # Higher = stricter matching, less ID switches
             frame_rate=int(self.fps)
         )
 
@@ -573,12 +580,11 @@ class VideoCamera:
         if torso is None:
             return
 
-        # Update dominant color
+        # Update dominant color (for display only)
         player.dominant_color = self._extract_dominant_color(torso)
 
-        # Detect team if not yet known
-        if player.team == TeamType.UNKNOWN:
-            player.team = self._detect_team(torso)
+        # NOTE: Team is FIXED based on slot (P1-P4=RED, P5-P8=TRQ)
+        # Never change player.team here!
 
         # Upscale for OCR
         upscaled = self._upscale_for_ocr(torso)
@@ -605,10 +611,10 @@ class VideoCamera:
 
                         if player.number_candidates.get(mismatch_key, 0) >= 2:
                             # Confirmed wrong match - find the correct player for this detection
-                            correct_player_id = self._find_player_by_jersey(number)
+                            # ONLY search within the SAME TEAM
+                            correct_player_id = self._find_player_by_jersey(number, player.team)
                             if correct_player_id and correct_player_id != player.player_id:
-                                # This tracker is actually tracking the other player!
-                                # Swap the tracker assignment
+                                # This tracker is actually tracking another player from same team
                                 correct_player = self.players[correct_player_id]
                                 print(f"FIXING SWAP: Tracker was on P{player.player_id} (#{player.jersey_number}) "
                                       f"but OCR shows #{number} -> reassigning to P{correct_player_id}")
@@ -620,8 +626,9 @@ class VideoCamera:
                                     player.tracker_id = None
                                     player.is_visible = False
                                     player.state = PlayerState.LOST
+                                    player.number_candidates.clear()
 
-                                    # Connect to correct player
+                                    # Connect to correct player (same team)
                                     self.tracker_to_player[old_tracker] = correct_player_id
                                     correct_player.tracker_id = old_tracker
                                     correct_player.is_visible = True
@@ -632,18 +639,19 @@ class VideoCamera:
 
                                     print(f"P{correct_player_id} (#{correct_player.jersey_number}) now LOCKED")
                             else:
-                                # No other player has this number - might be OCR error, re-lock with original number
-                                print(f"P{player.player_id} OCR error? No player has #{number}, re-locking as #{player.jersey_number}")
+                                # No other player in same team has this number - OCR error, re-lock
+                                print(f"P{player.player_id} OCR error? No same-team player has #{number}, re-locking as #{player.jersey_number}")
                                 player.state = PlayerState.LOCKED
                                 player.number_candidates.clear()
                         return
 
                 # Fresh player (no jersey yet) - check if number belongs to a LOST player
-                existing_player_id = self._find_player_by_jersey(number)
+                # ONLY search within the SAME TEAM
+                existing_player_id = self._find_player_by_jersey(number, player.team)
                 if existing_player_id and existing_player_id != player.player_id:
                     existing_player = self.players[existing_player_id]
                     # If the existing player is LOST, this tracker is actually THEM!
-                    # Transfer the tracker to the correct player
+                    # Transfer the tracker to the correct player (same team)
                     if existing_player.state == PlayerState.LOST or not existing_player.is_visible:
                         # Count detections before transferring (need consistency)
                         transfer_key = f"_transfer_{number}"
@@ -653,15 +661,15 @@ class VideoCamera:
                             print(f"TRANSFER: P{player.player_id} detected #{number} which belongs to LOST P{existing_player_id}")
                             old_tracker = player.tracker_id
                             if old_tracker is not None:
-                                # Clear the temporary slot
+                                # Clear the temporary slot (but keep team - it's fixed)
                                 player.tracker_id = None
                                 player.is_visible = False
                                 player.state = PlayerState.LOST
                                 player.jersey_number = None  # Reset - it was temporary
-                                player.team = TeamType.UNKNOWN
+                                # NOTE: Don't reset player.team - it's FIXED based on slot!
                                 player.number_candidates.clear()
 
-                                # Transfer to the real owner
+                                # Transfer to the real owner (same team)
                                 self.tracker_to_player[old_tracker] = existing_player_id
                                 existing_player.tracker_id = old_tracker
                                 existing_player.is_visible = True
@@ -681,16 +689,14 @@ class VideoCamera:
 
                 # Check if any number has enough consistent detections
                 for num, count in player.number_candidates.items():
+                    if num.startswith("_"):  # Skip internal keys like _transfer_, _wrong_
+                        continue
                     if count >= self.LOCK_THRESHOLD:
-                        # Before locking, check if another player already has this number
-                        existing_player = None
-                        for pid, p in self.players.items():
-                            if pid != player.player_id and p.jersey_number == num:
-                                existing_player = p
-                                break
+                        # Before locking, check if another player in SAME TEAM already has this number
+                        existing_player_id = self._find_player_by_jersey(num, player.team)
 
-                        if existing_player:
-                            # Another player has this number - clear candidates and keep hunting
+                        if existing_player_id and existing_player_id != player.player_id:
+                            # Another player in same team has this number - clear candidates and keep hunting
                             player.number_candidates.clear()
                             break
 
@@ -698,7 +704,8 @@ class VideoCamera:
                         player.confidence = confidence
                         player.state = PlayerState.LOCKED
                         player.detection_count = count
-                        print(f"Player P{player.player_id} LOCKED as #{num}")
+                        team_name = "RED" if player.team == TeamType.TEAM_RED else "TRQ"
+                        print(f"Player P{player.player_id} ({team_name}) LOCKED as #{num}")
                         break
             else:  # LOCKED - verification
                 if number != player.jersey_number:
@@ -712,23 +719,46 @@ class VideoCamera:
                     player.detection_count = min(player.detection_count + 1, 10)
                     player.confidence = max(player.confidence, confidence)
 
-    def _get_available_player_slot(self) -> Optional[int]:
-        """Get an available player slot (1-8) that's completely unused.
-        IMPORTANT: Do NOT return slots for LOST players - they are reserved for when
-        the real player comes back and OCR identifies them."""
-        # Only return completely unused slots (no jersey number assigned yet)
-        for player_id in sorted(self.players.keys()):
+    def _get_available_player_slot(self, team: TeamType) -> Optional[int]:
+        """Get an available player slot for a specific team.
+
+        P1-P4 = RED team
+        P5-P8 = TURQUOISE team
+
+        Only returns slots that:
+        1. Match the requested team
+        2. Are not currently visible
+        3. Have no jersey number assigned yet
+        """
+        if team == TeamType.TEAM_RED:
+            slot_range = range(1, 5)  # P1-P4
+        elif team == TeamType.TEAM_TURQUOISE:
+            slot_range = range(5, 9)  # P5-P8
+        else:
+            # Unknown team - can't assign
+            return None
+
+        for player_id in slot_range:
             player = self.players[player_id]
             if not player.is_visible and player.tracker_id is None and player.jersey_number is None:
                 return player_id
 
-        # If all 8 slots have been used at some point, return None
-        # The tracker will be ignored until a slot frees up via OCR transfer
         return None
 
-    def _find_player_by_jersey(self, jersey_number: str) -> Optional[int]:
-        """Find player_id that has this jersey number (locked or lost)."""
-        for player_id, player in self.players.items():
+    def _find_player_by_jersey(self, jersey_number: str, team: TeamType = None) -> Optional[int]:
+        """Find player_id that has this jersey number (locked or lost).
+
+        If team is specified, only search within that team's slots.
+        """
+        if team == TeamType.TEAM_RED:
+            search_range = range(1, 5)
+        elif team == TeamType.TEAM_TURQUOISE:
+            search_range = range(5, 9)
+        else:
+            search_range = range(1, 9)
+
+        for player_id in search_range:
+            player = self.players[player_id]
             if player.jersey_number == jersey_number:
                 return player_id
         return None
@@ -753,13 +783,15 @@ class VideoCamera:
         c2 = self._bbox_center(bbox2)
         return ((c1[0] - c2[0]) ** 2 + (c1[1] - c2[1]) ** 2) ** 0.5
 
-    def _assign_tracker_to_player(self, tracker_id: int, bbox: np.ndarray) -> Optional[int]:
+    def _assign_tracker_to_player(self, tracker_id: int, bbox: np.ndarray, frame: np.ndarray) -> Optional[int]:
         """
         Assign a ByteTrack tracker_id to one of our fixed player slots.
 
-        KEY INSIGHT: We do NOT use spatial matching for assignment because it's unreliable.
-        Instead, we assign to fresh slots and let OCR determine the true identity.
-        If OCR detects a jersey number that belongs to a LOST player, we transfer the tracker.
+        IMPORTANT: Team determines slot range:
+        - RED team -> P1-P4
+        - TURQUOISE team -> P5-P8
+
+        Team is detected from jersey color BEFORE assignment and is PERMANENT.
         """
         # Already assigned?
         if tracker_id in self.tracker_to_player:
@@ -768,21 +800,95 @@ class VideoCamera:
             self.players[player_id].last_bbox = tuple(bbox)
             return player_id
 
-        # NEW TRACKER: Assign to an available slot (prefer completely unused ones)
-        # Do NOT use spatial matching - it's unreliable and causes swaps
-        # OCR will determine the true identity later
-        player_id = self._get_available_player_slot()
+        # NEW TRACKER: Detect team color FIRST
+        torso = self._crop_torso(frame, bbox)
+        if torso is None:
+            return None
+
+        detected_team = self._detect_team(torso)
+
+        if detected_team == TeamType.UNKNOWN:
+            # Can't assign without knowing team - skip this frame
+            return None
+
+        # Get available slot for this team
+        player_id = self._get_available_player_slot(detected_team)
 
         if player_id is None:
-            return None  # All 8 slots taken
+            return None  # All slots for this team are taken
 
-        # Assign to fresh slot
+        # Assign to slot (team is already set in __init__)
         self.tracker_to_player[tracker_id] = player_id
         self.players[player_id].last_bbox = tuple(bbox)
         self.players[player_id].mark_visible(tracker_id, self.current_frame)
 
-        print(f"New tracker {tracker_id} assigned to P{player_id} (will verify via OCR)")
+        team_name = "RED" if detected_team == TeamType.TEAM_RED else "TRQ"
+        print(f"New tracker {tracker_id} assigned to P{player_id} ({team_name})")
         return player_id
+
+    def _try_reconnect_lost_player(self, frame: np.ndarray, tracker_id: int, bbox: np.ndarray) -> bool:
+        """
+        Try to reconnect an unassigned tracker to a LOST player via OCR.
+        Called when no fresh slots are available for this team.
+
+        IMPORTANT: Only reconnects to players of the SAME TEAM.
+        P1-P4 = RED, P5-P8 = TURQUOISE
+
+        Returns True if successfully reconnected, False otherwise.
+        """
+        # Skip if this tracker is somehow already assigned
+        if tracker_id in self.tracker_to_player:
+            return False
+
+        # Crop torso for team detection
+        torso = self._crop_torso(frame, bbox)
+        if torso is None:
+            return False
+
+        # Detect team color FIRST - this determines which players we can reconnect to
+        detected_team = self._detect_team(torso)
+
+        if detected_team == TeamType.UNKNOWN:
+            return False  # Can't reconnect without knowing team
+
+        # Only look at LOST players from the SAME TEAM
+        if detected_team == TeamType.TEAM_RED:
+            team_slot_range = range(1, 5)  # P1-P4
+        else:
+            team_slot_range = range(5, 9)  # P5-P8
+
+        lost_players = [self.players[pid] for pid in team_slot_range
+                       if self.players[pid].state == PlayerState.LOST
+                       and self.players[pid].jersey_number is not None]
+
+        if not lost_players:
+            return False
+
+        # Upscale and run OCR
+        upscaled = self._upscale_for_ocr(torso)
+        number, confidence = self._run_ocr(upscaled, detected_team)
+
+        if not number or confidence < self.CONFIDENCE_THRESHOLD:
+            return False
+
+        # Find LOST player with this jersey number (same team only)
+        for player in lost_players:
+            if player.jersey_number == number:
+                # Reconnect this tracker to the LOST player
+                self.tracker_to_player[tracker_id] = player.player_id
+                player.tracker_id = tracker_id
+                player.is_visible = True
+                player.state = PlayerState.LOCKED
+                player.last_seen_frame = self.current_frame
+                player.last_bbox = tuple(bbox)
+                player.confidence = confidence
+                player.number_candidates.clear()
+
+                team_name = "RED" if detected_team == TeamType.TEAM_RED else "TRQ"
+                print(f"RECONNECTED: Tracker {tracker_id} -> P{player.player_id} (#{number}, {team_name}) via OCR")
+                return True
+
+        return False
 
     def _update_player_visibility(self, active_tracker_ids: set) -> None:
         """Update visibility status for all players."""
@@ -893,10 +999,13 @@ class VideoCamera:
 
                         bbox = tracked_detections.xyxy[i]
 
-                        # Assign this tracker to a fixed player slot (P1-P8)
-                        player_id = self._assign_tracker_to_player(tracker_id, bbox)
+                        # Assign this tracker to a fixed player slot (P1-P4 RED, P5-P8 TRQ)
+                        player_id = self._assign_tracker_to_player(tracker_id, bbox, frame)
+
                         if player_id is None:
-                            continue  # No available slots
+                            # No fresh slots for this team - try to reconnect via OCR to a LOST player
+                            self._try_reconnect_lost_player(frame, tracker_id, bbox)
+                            continue
 
                         player = self.players[player_id]
                         player.last_seen_frame = self.current_frame
