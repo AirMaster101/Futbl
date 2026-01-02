@@ -22,7 +22,6 @@ build/
 
 # Uploaded/temporary files
 uploads/
-videos/
 
 # Model files
 *.pt
@@ -40,3 +39,6 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+ocr_debug/
+
