@@ -1151,6 +1151,76 @@ class VideoCamera:
             self.is_playing = not self.is_playing
             return self.is_playing
 
+    def seek_to_frame(self, frame_number: int) -> bool:
+        """
+        Seek to a specific frame in the video.
+
+        Args:
+            frame_number: The frame to seek to (0-indexed)
+
+        Returns:
+            True if seek was successful, False otherwise
+        """
+        with self.lock:
+            # Clamp frame number to valid range
+            frame_number = max(0, min(frame_number, self.total_frames - 1))
+
+            # Set video capture position
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            self.current_frame = frame_number
+
+            # Reset ByteTrack tracker - it will re-track from new position
+            self.tracker.reset()
+
+            # Clear tracker mappings (trackers will be reassigned)
+            self.tracker_to_player.clear()
+
+            # Reset all players to LOST state but keep their jersey numbers
+            for player in self.players.values():
+                if player.jersey_number is not None:
+                    # Player had identity - mark as LOST, keep jersey
+                    player.tracker_id = None
+                    player.is_visible = False
+                    player.state = PlayerState.LOST
+                    player.number_candidates.clear()
+                else:
+                    # Player never had identity - fully reset
+                    player.tracker_id = None
+                    player.is_visible = False
+                    player.state = PlayerState.HUNTING
+                    player.number_candidates.clear()
+
+            self.last_detections = None
+
+            print(f"Seeked to frame {frame_number}")
+            return True
+
+    def get_single_frame(self) -> Optional[bytes]:
+        """
+        Get the current frame without advancing.
+        Used when paused and seeking to show the frame at the seek position.
+        """
+        with self.lock:
+            # Save current position
+            current_pos = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+
+            # Read frame at current position
+            ret, frame = self.cap.read()
+
+            if not ret:
+                return None
+
+            # Reset position (so get_frame() will read same frame when resumed)
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
+
+            # Annotate frame (without processing - just show current detections)
+            annotated_frame = self._annotate_frame(frame)
+
+            # Encode as JPEG
+            _, buffer = cv2.imencode('.jpg', annotated_frame,
+                                     [cv2.IMWRITE_JPEG_QUALITY, 70])
+            return buffer.tobytes()
+
     def release(self):
         """Release video capture resources."""
         if self.cap:

@@ -138,6 +138,40 @@ def toggle_play():
     return jsonify({'is_playing': is_playing})
 
 
+@app.route('/seek', methods=['POST'])
+def seek():
+    """Seek to a specific frame."""
+    cam = get_camera()
+    if cam is None:
+        return jsonify({'error': 'No video loaded'}), 404
+
+    data = request.get_json()
+    if not data or 'frame' not in data:
+        return jsonify({'error': 'Frame number required'}), 400
+
+    frame_number = int(data['frame'])
+    success = cam.seek_to_frame(frame_number)
+
+    return jsonify({
+        'success': success,
+        'current_frame': cam.current_frame
+    })
+
+
+@app.route('/get_frame')
+def get_frame():
+    """Get a single frame (used when paused/seeking)."""
+    cam = get_camera()
+    if cam is None:
+        return "No video loaded", 404
+
+    frame_bytes = cam.get_single_frame()
+    if frame_bytes is None:
+        return "Could not get frame", 500
+
+    return Response(frame_bytes, mimetype='image/jpeg')
+
+
 @app.route('/reset', methods=['POST'])
 def reset():
     """Reset and go back to upload page."""

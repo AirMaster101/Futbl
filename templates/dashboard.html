@@ -246,6 +246,92 @@
             font-size: 14px;
             color: #6c757d;
         }
+
+        .seek-slider-container {
+            margin-top: 15px;
+            padding: 10px 0;
+        }
+
+        .seek-slider {
+            width: 100%;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .seek-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #28a745;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .seek-slider::-webkit-slider-thumb:hover {
+            background: #20c997;
+            transform: scale(1.2);
+        }
+
+        .seek-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #28a745;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        .seek-slider::-moz-range-thumb:hover {
+            background: #20c997;
+        }
+
+        .seek-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-top: 10px;
+        }
+
+        .btn-seek {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            font-size: 14px;
+            border: none;
+            background: rgba(255, 255, 255, 0.2);
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+        }
+
+        .btn-seek:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: scale(1.1);
+        }
+
+        .btn-seek-large {
+            width: 44px;
+            height: 44px;
+            font-size: 12px;
+            letter-spacing: -2px;
+        }
+
+        .seek-label {
+            font-size: 12px;
+            color: #6c757d;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -281,11 +367,17 @@
                                 <span class="frame-current" id="currentFrame">0</span>
                                 <span class="frame-total">/ <span id="totalFrames">0</span> frames</span>
                             </div>
-                            <div class="progress progress-video">
-                                <div class="progress-bar" id="progressBar" role="progressbar" style="width: 0%"></div>
+                            <div class="seek-slider-container">
+                                <input type="range" class="seek-slider" id="seekSlider" min="0" max="100" value="0">
                             </div>
-                            <div class="fps-display">
-                                Video FPS: <span id="videoFps">30</span>
+                            <div class="seek-controls">
+                                <button class="btn-seek btn-seek-large" id="seekBackBtn" title="Back 30 frames">⏪</button>
+                                <button class="btn-seek" id="seekBack1Btn" title="Back 1 frame">◀</button>
+                                <div class="flex-grow-1 fps-display text-center">
+                                    FPS: <span id="videoFps">30</span>
+                                </div>
+                                <button class="btn-seek" id="seekFwd1Btn" title="Forward 1 frame">▶</button>
+                                <button class="btn-seek btn-seek-large" id="seekFwdBtn" title="Forward 30 frames">⏩</button>
                             </div>
                         </div>
                     </div>
@@ -343,13 +435,20 @@
         const resetBtn = document.getElementById('resetBtn');
         const currentFrameEl = document.getElementById('currentFrame');
         const totalFramesEl = document.getElementById('totalFrames');
-        const progressBar = document.getElementById('progressBar');
+        const seekSlider = document.getElementById('seekSlider');
         const videoFpsEl = document.getElementById('videoFps');
         const playerTableBody = document.getElementById('playerTableBody');
         const noPlayersEl = document.getElementById('noPlayers');
         const videoStream = document.getElementById('videoStream');
+        const seekBackBtn = document.getElementById('seekBackBtn');
+        const seekBack1Btn = document.getElementById('seekBack1Btn');
+        const seekFwd1Btn = document.getElementById('seekFwd1Btn');
+        const seekFwdBtn = document.getElementById('seekFwdBtn');
 
         let isPlaying = true;
+        let totalFrames = 0;
+        let currentFrame = 0;
+        let isSeeking = false;
 
         // Poll for status updates
         function updateStatus() {
@@ -357,15 +456,17 @@
                 .then(response => response.json())
                 .then(data => {
                     // Update frame counter
-                    currentFrameEl.textContent = data.current_frame;
-                    totalFramesEl.textContent = data.total_frames;
+                    currentFrame = data.current_frame;
+                    totalFrames = data.total_frames;
+                    currentFrameEl.textContent = currentFrame;
+                    totalFramesEl.textContent = totalFrames;
                     videoFpsEl.textContent = data.fps.toFixed(1);
 
-                    // Update progress bar
-                    const progress = data.total_frames > 0
-                        ? (data.current_frame / data.total_frames) * 100
-                        : 0;
-                    progressBar.style.width = progress + '%';
+                    // Update slider (only if not currently seeking)
+                    if (!isSeeking) {
+                        seekSlider.max = totalFrames;
+                        seekSlider.value = currentFrame;
+                    }
 
                     // Update play/pause button
                     isPlaying = data.is_playing;
@@ -465,6 +566,90 @@
                         window.location.href = '/';
                     })
                     .catch(err => console.error('Reset error:', err));
+            }
+        });
+
+        // Seek to specific frame
+        function seekToFrame(frameNumber) {
+            // Pause video first
+            if (isPlaying) {
+                fetch('/toggle_play', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        isPlaying = data.is_playing;
+                        updatePlayPauseButton();
+                    });
+            }
+
+            fetch('/seek', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ frame: frameNumber })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    currentFrame = data.current_frame;
+                    currentFrameEl.textContent = currentFrame;
+                    seekSlider.value = currentFrame;
+                    // Refresh the frame display
+                    videoStream.src = '/get_frame?' + Date.now();
+                }
+            })
+            .catch(err => console.error('Seek error:', err));
+        }
+
+        // Slider events
+        seekSlider.addEventListener('mousedown', () => {
+            isSeeking = true;
+        });
+
+        seekSlider.addEventListener('mouseup', () => {
+            isSeeking = false;
+            seekToFrame(parseInt(seekSlider.value));
+        });
+
+        seekSlider.addEventListener('input', () => {
+            // Update frame counter while dragging
+            currentFrameEl.textContent = seekSlider.value;
+        });
+
+        // Seek button events
+        seekBackBtn.addEventListener('click', () => {
+            seekToFrame(Math.max(0, currentFrame - 30));
+        });
+
+        seekBack1Btn.addEventListener('click', () => {
+            seekToFrame(Math.max(0, currentFrame - 1));
+        });
+
+        seekFwd1Btn.addEventListener('click', () => {
+            seekToFrame(Math.min(totalFrames - 1, currentFrame + 1));
+        });
+
+        seekFwdBtn.addEventListener('click', () => {
+            seekToFrame(Math.min(totalFrames - 1, currentFrame + 30));
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    seekToFrame(Math.max(0, currentFrame - 30));
+                } else {
+                    seekToFrame(Math.max(0, currentFrame - 1));
+                }
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    seekToFrame(Math.min(totalFrames - 1, currentFrame + 30));
+                } else {
+                    seekToFrame(Math.min(totalFrames - 1, currentFrame + 1));
+                }
+            } else if (e.key === ' ') {
+                e.preventDefault();
+                playPauseBtn.click();
             }
         });
 
