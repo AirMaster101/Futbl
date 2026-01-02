@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Football Player Tracking - Upload</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #1a472a 0%, #2d5a3d 50%, #1a472a 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .upload-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 50px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 90%;
+        }
+
+        .upload-icon {
+            font-size: 80px;
+            color: #1a472a;
+            margin-bottom: 20px;
+        }
+
+        .drop-zone {
+            border: 3px dashed #1a472a;
+            border-radius: 15px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9fa;
+        }
+
+        .drop-zone:hover,
+        .drop-zone.dragover {
+            border-color: #2d5a3d;
+            background: #e8f5e9;
+            transform: scale(1.02);
+        }
+
+        .drop-zone.uploading {
+            pointer-events: none;
+            opacity: 0.7;
+        }
+
+        .btn-upload {
+            background: #1a472a;
+            border: none;
+            padding: 15px 40px;
+            font-size: 18px;
+            border-radius: 10px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-upload:hover {
+            background: #2d5a3d;
+            transform: translateY(-2px);
+        }
+
+        .progress-container {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .supported-formats {
+            font-size: 14px;
+            color: #6c757d;
+            margin-top: 15px;
+        }
+
+        .title {
+            color: #1a472a;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #6c757d;
+            margin-bottom: 30px;
+        }
+
+        .error-message {
+            display: none;
+            margin-top: 15px;
+        }
+
+        .loading-spinner {
+            display: none;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="upload-container text-center">
+        <div class="upload-icon">&#9917;</div>
+        <h1 class="title">Football Player Tracking</h1>
+        <p class="subtitle">Real-time jersey number recognition with YOLO11 & PaddleOCR</p>
+
+        <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
+            <div class="drop-zone" id="dropZone">
+                <input type="file" name="video" id="videoInput" accept=".mp4,.avi,.mov,.mkv,.webm" hidden>
+                <div class="drop-content">
+                    <p class="mb-3"><strong>Drag & Drop your video here</strong></p>
+                    <p class="text-muted">or</p>
+                    <button type="button" class="btn btn-upload btn-primary mt-2" id="browseBtn">
+                        Browse Files
+                    </button>
+                </div>
+                <p class="supported-formats">
+                    Supported formats: MP4, AVI, MOV, MKV, WebM (max 500MB)
+                </p>
+            </div>
+
+            <div class="progress-container" id="progressContainer">
+                <p class="mb-2"><span id="fileName"></span></p>
+                <div class="progress" style="height: 25px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                         role="progressbar" id="progressBar" style="width: 0%">0%</div>
+                </div>
+            </div>
+
+            <div class="loading-spinner" id="loadingSpinner">
+                <div class="spinner-border text-success" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Initializing YOLO11 model... This may take a moment.</p>
+            </div>
+
+            <div class="alert alert-danger error-message" id="errorMessage" role="alert"></div>
+        </form>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const videoInput = document.getElementById('videoInput');
+        const browseBtn = document.getElementById('browseBtn');
+        const uploadForm = document.getElementById('uploadForm');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const fileName = document.getElementById('fileName');
+        const errorMessage = document.getElementById('errorMessage');
+        const loadingSpinner = document.getElementById('loadingSpinner');
+
+        // Browse button click
+        browseBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            videoInput.click();
+        });
+
+        // File selected
+        videoInput.addEventListener('change', () => {
+            if (videoInput.files.length > 0) {
+                handleFile(videoInput.files[0]);
+            }
+        });
+
+        // Drag and drop events
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            // Validate file type
+            const allowedTypes = ['video/mp4', 'video/avi', 'video/quicktime', 'video/x-matroska', 'video/webm'];
+            const allowedExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm'];
+
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (!allowedExtensions.includes(ext)) {
+                showError('Invalid file type. Please upload an MP4, AVI, MOV, MKV, or WebM file.');
+                return;
+            }
+
+            // Validate file size (500MB)
+            if (file.size > 500 * 1024 * 1024) {
+                showError('File too large. Maximum size is 500MB.');
+                return;
+            }
+
+            uploadFile(file);
+        }
+
+        function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('video', file);
+
+            // Show progress
+            dropZone.classList.add('uploading');
+            progressContainer.style.display = 'block';
+            fileName.textContent = file.name;
+            errorMessage.style.display = 'none';
+
+            const xhr = new XMLHttpRequest();
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    progressBar.style.width = percent + '%';
+                    progressBar.textContent = percent + '%';
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status === 200 || xhr.status === 302) {
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+                    progressContainer.style.display = 'none';
+                    loadingSpinner.style.display = 'block';
+
+                    // Redirect to dashboard
+                    window.location.href = '/dashboard';
+                } else {
+                    let errorMsg = 'Upload failed. Please try again.';
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.error) {
+                            errorMsg = response.error;
+                        }
+                    } catch (e) {}
+                    showError(errorMsg);
+                    resetUpload();
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                showError('Upload failed. Please check your connection and try again.');
+                resetUpload();
+            });
+
+            xhr.open('POST', '/upload');
+            xhr.send(formData);
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+        }
+
+        function resetUpload() {
+            dropZone.classList.remove('uploading');
+            progressContainer.style.display = 'none';
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+            loadingSpinner.style.display = 'none';
+            videoInput.value = '';
+        }
+    </script>
+</body>
+</html>

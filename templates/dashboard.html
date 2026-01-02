@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Football Player Tracking - Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+
+        .navbar {
+            background: linear-gradient(90deg, #1a472a 0%, #2d5a3d 100%);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .navbar-brand {
+            font-weight: bold;
+            font-size: 24px;
+        }
+
+        .video-container {
+            background: #000;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            position: relative;
+        }
+
+        .video-stream {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .controls-panel {
+            background: rgba(26, 71, 42, 0.9);
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .btn-control {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            font-size: 24px;
+            border: none;
+            transition: all 0.3s ease;
+        }
+
+        .btn-play {
+            background: #28a745;
+        }
+
+        .btn-play:hover {
+            background: #218838;
+            transform: scale(1.1);
+        }
+
+        .btn-pause {
+            background: #ffc107;
+            color: #000;
+        }
+
+        .btn-pause:hover {
+            background: #e0a800;
+            transform: scale(1.1);
+        }
+
+        .btn-reset {
+            background: #dc3545;
+        }
+
+        .btn-reset:hover {
+            background: #c82333;
+            transform: scale(1.1);
+        }
+
+        .stats-panel {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 25px;
+            height: 100%;
+        }
+
+        .frame-counter {
+            font-size: 18px;
+            margin-bottom: 20px;
+        }
+
+        .frame-current {
+            font-size: 36px;
+            font-weight: bold;
+            color: #28a745;
+        }
+
+        .frame-total {
+            color: #6c757d;
+        }
+
+        .progress-video {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+
+        .progress-video .progress-bar {
+            background: linear-gradient(90deg, #28a745, #20c997);
+            border-radius: 4px;
+        }
+
+        .player-table {
+            background: transparent;
+            margin-top: 20px;
+        }
+
+        .player-table th {
+            background: rgba(26, 71, 42, 0.8);
+            color: #fff;
+            border: none;
+            padding: 12px;
+        }
+
+        .player-table td {
+            background: rgba(255, 255, 255, 0.05);
+            color: #eee;
+            border: none;
+            padding: 10px 12px;
+            vertical-align: middle;
+        }
+
+        .player-table tbody tr:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .status-badge {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .status-locked {
+            background: #28a745;
+            color: #fff;
+        }
+
+        .status-hunting {
+            background: #ffc107;
+            color: #000;
+            animation: pulse 1.5s infinite;
+        }
+
+        .status-lost {
+            background: #6c757d;
+            color: #fff;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .jersey-number {
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .team-badge {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .team-red {
+            background: #dc3545;
+            color: #fff;
+        }
+
+        .team-turquoise {
+            background: #20c997;
+            color: #000;
+        }
+
+        .team-unknown {
+            background: #6c757d;
+            color: #fff;
+        }
+
+        .tracker-id {
+            font-family: monospace;
+            font-weight: bold;
+            color: #20c997;
+        }
+
+        .no-players {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+
+        .no-players-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+
+        .legend {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+            font-size: 14px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .legend-dot.locked {
+            background: #28a745;
+        }
+
+        .legend-dot.hunting {
+            background: #ffc107;
+        }
+
+        .legend-dot.lost {
+            background: #6c757d;
+        }
+
+        .fps-display {
+            font-size: 14px;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark">
+        <div class="container">
+            <span class="navbar-brand">&#9917; Football Player Tracking</span>
+            <span class="text-white-50">YOLO11 + ByteTrack + PaddleOCR</span>
+        </div>
+    </nav>
+
+    <div class="container py-4">
+        <div class="row">
+            <!-- Video Panel -->
+            <div class="col-lg-8">
+                <div class="video-container">
+                    <img src="/video_feed" class="video-stream" id="videoStream" alt="Video Stream">
+                </div>
+
+                <div class="controls-panel">
+                    <div class="row align-items-center">
+                        <div class="col-auto">
+                            <button class="btn btn-control btn-pause" id="playPauseBtn" title="Play/Pause">
+                                &#10074;&#10074;
+                            </button>
+                        </div>
+                        <div class="col-auto">
+                            <button class="btn btn-control btn-reset" id="resetBtn" title="Upload New Video">
+                                &#8634;
+                            </button>
+                        </div>
+                        <div class="col">
+                            <div class="frame-counter">
+                                <span class="frame-current" id="currentFrame">0</span>
+                                <span class="frame-total">/ <span id="totalFrames">0</span> frames</span>
+                            </div>
+                            <div class="progress progress-video">
+                                <div class="progress-bar" id="progressBar" role="progressbar" style="width: 0%"></div>
+                            </div>
+                            <div class="fps-display">
+                                Video FPS: <span id="videoFps">30</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Panel -->
+            <div class="col-lg-4">
+                <div class="stats-panel">
+                    <h4 class="mb-3">&#128100; Live Identity Table</h4>
+
+                    <div class="legend">
+                        <div class="legend-item">
+                            <div class="legend-dot locked"></div>
+                            <span>Locked</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-dot hunting"></div>
+                            <span>Searching</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-dot lost"></div>
+                            <span>Lost</span>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive mt-3">
+                        <table class="table player-table" id="playerTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Team</th>
+                                    <th>Jersey #</th>
+                                    <th>Conf.</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="playerTableBody">
+                                <!-- Players will be populated here -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="no-players" id="noPlayers">
+                        <div class="no-players-icon">&#128694;</div>
+                        <p>Waiting for players to be detected...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const currentFrameEl = document.getElementById('currentFrame');
+        const totalFramesEl = document.getElementById('totalFrames');
+        const progressBar = document.getElementById('progressBar');
+        const videoFpsEl = document.getElementById('videoFps');
+        const playerTableBody = document.getElementById('playerTableBody');
+        const noPlayersEl = document.getElementById('noPlayers');
+        const videoStream = document.getElementById('videoStream');
+
+        let isPlaying = true;
+
+        // Poll for status updates
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    // Update frame counter
+                    currentFrameEl.textContent = data.current_frame;
+                    totalFramesEl.textContent = data.total_frames;
+                    videoFpsEl.textContent = data.fps.toFixed(1);
+
+                    // Update progress bar
+                    const progress = data.total_frames > 0
+                        ? (data.current_frame / data.total_frames) * 100
+                        : 0;
+                    progressBar.style.width = progress + '%';
+
+                    // Update play/pause button
+                    isPlaying = data.is_playing;
+                    updatePlayPauseButton();
+
+                    // Update player table
+                    updatePlayerTable(data.players);
+                })
+                .catch(err => console.error('Status fetch error:', err));
+        }
+
+        function updatePlayPauseButton() {
+            if (isPlaying) {
+                playPauseBtn.innerHTML = '&#10074;&#10074;';
+                playPauseBtn.classList.remove('btn-play');
+                playPauseBtn.classList.add('btn-pause');
+            } else {
+                playPauseBtn.innerHTML = '&#9658;';
+                playPauseBtn.classList.remove('btn-pause');
+                playPauseBtn.classList.add('btn-play');
+            }
+        }
+
+        function updatePlayerTable(players) {
+            if (!players || players.length === 0) {
+                playerTableBody.innerHTML = '';
+                noPlayersEl.style.display = 'block';
+                return;
+            }
+
+            noPlayersEl.style.display = 'none';
+
+            // Sort players by tracker ID
+            players.sort((a, b) => {
+                const idA = parseInt(a.id.replace('P', ''));
+                const idB = parseInt(b.id.replace('P', ''));
+                return idA - idB;
+            });
+
+            playerTableBody.innerHTML = players.map(player => {
+                // Status styling
+                let statusClass = 'status-hunting';
+                let statusText = 'Searching';
+                if (player.status === 'LOCKED') {
+                    statusClass = 'status-locked';
+                    statusText = 'Locked';
+                } else if (player.status === 'LOST') {
+                    statusClass = 'status-lost';
+                    statusText = 'Lost';
+                }
+                const numberDisplay = player.number === '?' ? '?' : '#' + player.number;
+
+                // Team badge styling
+                let teamClass = 'team-unknown';
+                let teamText = '?';
+                if (player.team === 'Red') {
+                    teamClass = 'team-red';
+                    teamText = 'RED';
+                } else if (player.team === 'Turquoise') {
+                    teamClass = 'team-turquoise';
+                    teamText = 'TRQ';
+                }
+
+                return `
+                    <tr>
+                        <td><span class="tracker-id">${player.id}</span></td>
+                        <td><span class="team-badge ${teamClass}">${teamText}</span></td>
+                        <td><span class="jersey-number">${numberDisplay}</span></td>
+                        <td>${player.confidence}</td>
+                        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Play/Pause toggle
+        playPauseBtn.addEventListener('click', () => {
+            fetch('/toggle_play', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    isPlaying = data.is_playing;
+                    updatePlayPauseButton();
+
+                    // Reload video stream if playing
+                    if (isPlaying) {
+                        videoStream.src = '/video_feed?' + Date.now();
+                    }
+                })
+                .catch(err => console.error('Toggle error:', err));
+        });
+
+        // Reset button
+        resetBtn.addEventListener('click', () => {
+            if (confirm('Upload a new video? Current progress will be lost.')) {
+                fetch('/reset', { method: 'POST' })
+                    .then(() => {
+                        window.location.href = '/';
+                    })
+                    .catch(err => console.error('Reset error:', err));
+            }
+        });
+
+        // Start polling
+        setInterval(updateStatus, 1000);
+        updateStatus();
+    </script>
+</body>
+</html>
