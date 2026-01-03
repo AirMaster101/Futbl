@@ -45,6 +45,7 @@ class PlayerTrack:
     team: TeamType = TeamType.UNKNOWN
     is_visible: bool = False  # Currently visible in frame
     last_bbox: Optional[Tuple[float, float, float, float]] = None  # Last known position (x1, y1, x2, y2)
+    team_mismatch_count: int = 0  # Consecutive frames where detected team != assigned team
 
     def reset_to_hunting(self):
         """Reset player to hunting state."""
@@ -88,7 +89,11 @@ class VideoCamera:
     VERIFICATION_INTERVAL = 50  # Verify locked players every 50 frames
     LOCK_THRESHOLD = 3  # Number of consistent detections to lock
     CONFIDENCE_THRESHOLD = 0.5  # Minimum OCR confidence (lowered for preprocessed images)
-    LOST_TRACK_TIMEOUT = 35  # Frames before marking player as lost (just above ByteTrack's 30 frame buffer)
+    LOST_TRACK_TIMEOUT = 50  # Frames before marking player as lost (just above ByteTrack's 45 frame buffer)
+
+    # Team swap detection - critical for fixing ByteTrack ID swaps after player overlaps
+    TEAM_SWAP_CHECK_INTERVAL = 5  # Check for team color mismatches every N frames
+    TEAM_MISMATCH_THRESHOLD = 3  # Consecutive mismatches needed to confirm swap
 
     # Inference optimization
     INFERENCE_SIZE = 640  # Resize for YOLO inference
@@ -137,11 +142,11 @@ class VideoCamera:
         self.model = YOLO("yolo11l.pt")
 
         # Initialize ByteTrack tracker via supervision
-        # Use stable default settings - don't over-tune
+        # Balanced settings for football tracking
         self.tracker = sv.ByteTrack(
-            track_activation_threshold=0.25,  # Default-ish, not too aggressive
-            lost_track_buffer=30,             # Keep tracks for 1 second at 30fps
-            minimum_matching_threshold=0.8,   # Higher = stricter matching, less ID switches
+            track_activation_threshold=0.20,  # Slightly below YOLO conf to catch valid detections
+            lost_track_buffer=45,             # Keep tracks for 1.5 seconds
+            minimum_matching_threshold=0.75,  # High enough to avoid wrong matches, low enough for movement
             frame_rate=int(self.fps)
         )
 
@@ -169,11 +174,16 @@ class VideoCamera:
         # Try PARSeq first (state-of-the-art, fast, accurate for short text)
         try:
             import torch
+            import torchvision.transforms as T
             print("Loading PARSeq model...")
             self.parseq_model = torch.hub.load('baudm/parseq', 'parseq', pretrained=True, trust_repo=True).eval()
-            # Get image transform
-            from strhub.data.module import SceneTextDataModule
-            self.parseq_transform = SceneTextDataModule.get_transform(self.parseq_model.hparams.img_size)
+            # Create image transform manually (same as SceneTextDataModule.get_transform)
+            img_size = self.parseq_model.hparams.img_size
+            self.parseq_transform = T.Compose([
+                T.Resize(img_size, T.InterpolationMode.BICUBIC),
+                T.ToTensor(),
+                T.Normalize(0.5, 0.5)
+            ])
             self.ocr_type = 'parseq'
             # Use GPU if available
             self.parseq_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -256,10 +266,16 @@ class VideoCamera:
             if ocr_type == 'parseq':
                 try:
                     import torch
+                    import torchvision.transforms as T
                     print("Switching to PARSeq...")
                     self.parseq_model = torch.hub.load('baudm/parseq', 'parseq', pretrained=True, trust_repo=True).eval()
-                    from strhub.data.module import SceneTextDataModule
-                    self.parseq_transform = SceneTextDataModule.get_transform(self.parseq_model.hparams.img_size)
+                    # Create image transform manually (same as SceneTextDataModule.get_transform)
+                    img_size = self.parseq_model.hparams.img_size
+                    self.parseq_transform = T.Compose([
+                        T.Resize(img_size, T.InterpolationMode.BICUBIC),
+                        T.ToTensor(),
+                        T.Normalize(0.5, 0.5)
+                    ])
                     self.parseq_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
                     self.parseq_model = self.parseq_model.to(self.parseq_device)
                     self.ocr_type = 'parseq'
@@ -298,38 +314,95 @@ class VideoCamera:
                 return False, f"Unknown OCR type: {ocr_type}"
 
     def _is_on_green_field(self, frame: np.ndarray, bbox: np.ndarray) -> bool:
-        """Check if detection is on the green playing field."""
-        x1, y1, x2, y2 = map(int, bbox)
+        """
+        Check if detection is on the green playing field.
 
-        # Get bottom center of bounding box (player's feet position)
+        Fish-eye camera aware: Samples from MULTIPLE positions to handle:
+        - Players standing on white lines
+        - Fish-eye edge distortion
+        - Goal area markings
+
+        Returns True if ANY sample position shows enough green.
+        """
+        x1, y1, x2, y2 = map(int, bbox)
+        h, w = frame.shape[:2]
+
+        bbox_height = y2 - y1
+        bbox_width = x2 - x1
+        bbox_area = bbox_height * bbox_width
+        frame_area = h * w
+
+        # Calculate relative size of detection
+        relative_size = bbox_area / frame_area
+
+        # Determine detection size category and appropriate threshold
+        # Large detections need lower threshold (they're clearly visible)
+        # Small detections need higher threshold (more likely to be noise)
+        if relative_size > 0.08 or bbox_height > h * 0.5:
+            # Very large - close to camera, use low threshold
+            green_threshold = 0.10
+        elif relative_size > 0.02 or bbox_height > h * 0.25:
+            # Medium - normal player size
+            green_threshold = 0.15
+        else:
+            # Small - distant or possibly noise
+            green_threshold = 0.20
+
+        # Sample from MULTIPLE positions - accept if ANY shows green
+        sample_positions = []
+
         foot_x = (x1 + x2) // 2
         foot_y = y2
 
-        # Ensure coordinates are within frame
-        h, w = frame.shape[:2]
-        foot_x = max(0, min(foot_x, w - 1))
-        foot_y = max(0, min(foot_y, h - 1))
+        # Clamp foot_y to valid range, accounting for fish-eye bottom distortion
+        if foot_y > h - 15:
+            foot_y = h - 20
 
-        # Sample area around feet (10x10 region)
-        sample_y1 = max(0, foot_y - 5)
-        sample_y2 = min(h, foot_y + 5)
-        sample_x1 = max(0, foot_x - 5)
-        sample_x2 = min(w, foot_x + 5)
+        # Position 1: At feet level
+        sample_positions.append((foot_x, min(foot_y, h - 10)))
 
-        if sample_y2 <= sample_y1 or sample_x2 <= sample_x1:
-            return True  # Default to accepting if can't sample
+        # Position 2: Just below feet (outside bbox)
+        sample_positions.append((foot_x, min(foot_y + 10, h - 5)))
 
-        sample = frame[sample_y1:sample_y2, sample_x1:sample_x2]
+        # Position 3: Left side at feet level
+        sample_positions.append((max(x1 - 5, 5), min(foot_y, h - 10)))
 
-        # Convert to HSV
-        hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
+        # Position 4: Right side at feet level
+        sample_positions.append((min(x2 + 5, w - 5), min(foot_y, h - 10)))
 
-        # Check for green color (field)
-        mask = cv2.inRange(hsv, self.GREEN_HSV_LOWER, self.GREEN_HSV_UPPER)
-        green_ratio = np.sum(mask > 0) / mask.size
+        sample_size = 15  # Sample area size
 
-        # Accept if at least 30% of the area around feet is green
-        return green_ratio > 0.3
+        for sx, sy in sample_positions:
+            # Ensure coordinates are valid
+            sx = max(sample_size, min(sx, w - sample_size))
+            sy = max(sample_size, min(sy, h - sample_size))
+
+            # Define sample region
+            half = sample_size // 2
+            s_y1 = sy - half
+            s_y2 = sy + half
+            s_x1 = sx - half
+            s_x2 = sx + half
+
+            if s_y2 <= s_y1 or s_x2 <= s_x1:
+                continue
+
+            sample = frame[s_y1:s_y2, s_x1:s_x2]
+
+            if sample.size == 0:
+                continue
+
+            # Convert to HSV and check for green
+            hsv = cv2.cvtColor(sample, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(hsv, self.GREEN_HSV_LOWER, self.GREEN_HSV_UPPER)
+            green_ratio = np.sum(mask > 0) / mask.size
+
+            # Accept if this sample shows enough green
+            if green_ratio > green_threshold:
+                return True
+
+        # No sample position showed enough green - likely not on field
+        return False
 
     def _extract_dominant_color(self, image: np.ndarray) -> Tuple[int, int, int]:
         """Extract dominant color from jersey region for box coloring."""
@@ -1031,9 +1104,9 @@ class VideoCamera:
                 if player.tracker_id not in active_tracker_ids:
                     # This player's tracker is no longer active
                     frames_lost = self.current_frame - player.last_seen_frame
-                    # Must be slightly longer than ByteTrack's lost_track_buffer (30 frames)
+                    # Must be slightly longer than ByteTrack's lost_track_buffer (60 frames)
                     # to ensure ByteTrack has truly dropped the track
-                    if frames_lost > 35:
+                    if frames_lost > self.LOST_TRACK_TIMEOUT:
                         # Mark as lost - store last known position
                         old_tracker = player.tracker_id
                         player.mark_lost(player.last_bbox)
@@ -1042,6 +1115,197 @@ class VideoCamera:
                         if player.state != PlayerState.LOST:
                             player.state = PlayerState.LOST
                             print(f"Player P{player_id} (#{player.jersey_number}) marked as LOST at {player.last_bbox}")
+
+    def _detect_and_fix_team_swaps(self, frame: np.ndarray, tracked_detections) -> None:
+        """
+        Detect and fix team color mismatches caused by ByteTrack ID swaps.
+
+        When two players from different teams overlap, ByteTrack may swap their
+        tracker IDs. This method detects when a tracker's actual jersey color
+        doesn't match its assigned player slot's team, and fixes the swap.
+        """
+        if tracked_detections.tracker_id is None:
+            return
+
+        # Only run this check every N frames to save computation
+        if self.current_frame % self.TEAM_SWAP_CHECK_INTERVAL != 0:
+            return
+
+        # Build a map of current tracker -> detected team for this frame
+        tracker_to_detected_team: Dict[int, TeamType] = {}
+        tracker_to_bbox: Dict[int, np.ndarray] = {}
+
+        for i, tracker_id in enumerate(tracked_detections.tracker_id):
+            if tracker_id is None:
+                continue
+
+            # Only check trackers that are assigned to a player
+            if tracker_id not in self.tracker_to_player:
+                continue
+
+            bbox = tracked_detections.xyxy[i]
+            torso = self._crop_torso(frame, bbox)
+            if torso is None:
+                continue
+
+            detected_team = self._detect_team(torso)
+            if detected_team != TeamType.UNKNOWN:
+                tracker_to_detected_team[tracker_id] = detected_team
+                tracker_to_bbox[tracker_id] = bbox
+
+        # Check each assigned tracker for team mismatch
+        mismatched_players: List[Tuple[int, TeamType]] = []  # (player_id, detected_team)
+
+        for tracker_id, detected_team in tracker_to_detected_team.items():
+            player_id = self.tracker_to_player.get(tracker_id)
+            if player_id is None:
+                continue
+
+            player = self.players[player_id]
+            expected_team = player.team
+
+            if detected_team != expected_team:
+                # Team mismatch detected!
+                player.team_mismatch_count += 1
+
+                if player.team_mismatch_count >= self.TEAM_MISMATCH_THRESHOLD:
+                    mismatched_players.append((player_id, detected_team))
+            else:
+                # Team matches - reset mismatch counter
+                player.team_mismatch_count = 0
+
+        # If we have mismatched players, try to find swap pairs
+        if len(mismatched_players) >= 2:
+            self._fix_team_swaps(mismatched_players, tracker_to_bbox)
+        elif len(mismatched_players) == 1:
+            # Single mismatch - might be a detection error or player left frame
+            # Try to find an unassigned tracker of the correct team
+            player_id, wrong_team = mismatched_players[0]
+            self._fix_single_mismatch(player_id, wrong_team, frame, tracked_detections)
+
+    def _fix_team_swaps(self, mismatched_players: List[Tuple[int, TeamType]],
+                        tracker_to_bbox: Dict[int, np.ndarray]) -> None:
+        """
+        Fix team swaps by finding matching pairs.
+
+        If P1 (RED slot) is tracking TURQUOISE and P5 (TURQUOISE slot) is tracking RED,
+        we swap their trackers.
+        """
+        # Separate by what team they're CURRENTLY showing (not what they should be)
+        showing_red = [(pid, team) for pid, team in mismatched_players if team == TeamType.TEAM_RED]
+        showing_turquoise = [(pid, team) for pid, team in mismatched_players if team == TeamType.TEAM_TURQUOISE]
+
+        # Try to pair them up for swaps
+        for red_player_id, _ in showing_red:
+            red_player = self.players[red_player_id]
+            # This player is in a TURQUOISE slot (P5-P8) but showing RED
+            if red_player.team != TeamType.TEAM_TURQUOISE:
+                continue  # Not a valid swap candidate
+
+            for turq_player_id, _ in showing_turquoise:
+                turq_player = self.players[turq_player_id]
+                # This player is in a RED slot (P1-P4) but showing TURQUOISE
+                if turq_player.team != TeamType.TEAM_RED:
+                    continue  # Not a valid swap candidate
+
+                # Found a swap pair! Exchange their trackers
+                red_tracker = red_player.tracker_id
+                turq_tracker = turq_player.tracker_id
+
+                if red_tracker is None or turq_tracker is None:
+                    continue
+
+                # Perform the swap
+                print(f"FIXING TEAM SWAP: P{red_player_id} (TRQ slot, showing RED) <-> "
+                      f"P{turq_player_id} (RED slot, showing TRQ)")
+
+                # Swap tracker assignments
+                self.tracker_to_player[red_tracker] = turq_player_id  # RED tracker -> RED slot
+                self.tracker_to_player[turq_tracker] = red_player_id  # TRQ tracker -> TRQ slot
+
+                # Update player objects
+                red_player.tracker_id = turq_tracker
+                turq_player.tracker_id = red_tracker
+
+                # Swap bboxes if available
+                if red_tracker in tracker_to_bbox and turq_tracker in tracker_to_bbox:
+                    red_player.last_bbox = tuple(tracker_to_bbox[turq_tracker])
+                    turq_player.last_bbox = tuple(tracker_to_bbox[red_tracker])
+
+                # Reset mismatch counters
+                red_player.team_mismatch_count = 0
+                turq_player.team_mismatch_count = 0
+
+                # Reset to HUNTING to re-verify jersey numbers after swap
+                red_player.state = PlayerState.HUNTING
+                turq_player.state = PlayerState.HUNTING
+                red_player.number_candidates.clear()
+                turq_player.number_candidates.clear()
+
+                print(f"  P{turq_player_id} now tracking #{turq_player.jersey_number or '?'} (RED)")
+                print(f"  P{red_player_id} now tracking #{red_player.jersey_number or '?'} (TRQ)")
+
+                # Remove from lists to avoid double-swapping
+                showing_red.remove((red_player_id, TeamType.TEAM_RED))
+                showing_turquoise.remove((turq_player_id, TeamType.TEAM_TURQUOISE))
+                break
+
+    def _fix_single_mismatch(self, player_id: int, detected_team: TeamType,
+                             frame: np.ndarray, tracked_detections) -> None:
+        """
+        Handle a single team mismatch - the tracker is showing wrong team color.
+
+        This can happen when:
+        1. A player swapped with someone who left the frame
+        2. Detection error (should be rare after 3 consecutive mismatches)
+
+        We try to find an unassigned tracker of the correct team to swap with.
+        """
+        player = self.players[player_id]
+        expected_team = player.team
+
+        # Look for unassigned trackers that match our expected team
+        if tracked_detections.tracker_id is None:
+            return
+
+        for i, tracker_id in enumerate(tracked_detections.tracker_id):
+            if tracker_id is None:
+                continue
+
+            # Skip already-assigned trackers
+            if tracker_id in self.tracker_to_player:
+                continue
+
+            bbox = tracked_detections.xyxy[i]
+            torso = self._crop_torso(frame, bbox)
+            if torso is None:
+                continue
+
+            unassigned_team = self._detect_team(torso)
+
+            if unassigned_team == expected_team:
+                # Found an unassigned tracker with the correct team color!
+                old_tracker = player.tracker_id
+
+                print(f"FIXING SINGLE MISMATCH: P{player_id} ({expected_team.value}) "
+                      f"was tracking wrong team, reassigning to tracker {tracker_id}")
+
+                # Reassign player to new tracker
+                if old_tracker is not None and old_tracker in self.tracker_to_player:
+                    del self.tracker_to_player[old_tracker]
+
+                self.tracker_to_player[tracker_id] = player_id
+                player.tracker_id = tracker_id
+                player.last_bbox = tuple(bbox)
+                player.team_mismatch_count = 0
+                player.state = PlayerState.HUNTING  # Re-verify jersey
+                player.number_candidates.clear()
+
+                return
+
+        # No suitable tracker found - just reset the mismatch counter to avoid spam
+        # The player might have genuinely left the frame
+        player.team_mismatch_count = 0
 
     def get_frame(self) -> Optional[bytes]:
         """
@@ -1081,11 +1345,11 @@ class VideoCamera:
                     inference_frame = frame
                     scale = 1.0
 
-                # Run YOLO detection with LOWER confidence to catch distant players
+                # Run YOLO detection - balance between catching players and avoiding false positives
                 results = self.model(
                     inference_frame,
                     classes=[0, 32],  # person=0, sports ball=32
-                    conf=0.15,  # Lower confidence to catch players far away
+                    conf=0.25,  # Reasonable threshold - green field filter handles the rest
                     verbose=False
                 )[0]
 
@@ -1146,6 +1410,11 @@ class VideoCamera:
 
                         # Process OCR
                         self._process_player_ocr(frame, player, bbox)
+
+                # STEP 4: Detect and fix team color swaps caused by ByteTrack ID swaps
+                # This catches cases where two players from different teams overlap
+                # and ByteTrack swaps their tracker IDs
+                self._detect_and_fix_team_swaps(frame, tracked_detections)
 
             # Annotate frame
             annotated_frame = self._annotate_frame(frame)
