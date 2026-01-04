@@ -121,10 +121,13 @@ def status():
             'total_frames': 0,
             'fps': 0,
             'is_playing': False,
-            'players': []
+            'players': [],
+            'ocr_images': {}
         })
 
-    return jsonify(cam.get_stats())
+    # Check if OCR debug images are requested
+    include_ocr = request.args.get('ocr', '0') == '1'
+    return jsonify(cam.get_stats(include_ocr_images=include_ocr))
 
 
 @app.route('/toggle_play', methods=['POST'])
@@ -217,6 +220,26 @@ def switch_ocr():
         'message': message,
         'current': cam.ocr_type
     })
+
+
+@app.route('/ocr_debug/<int:player_id>')
+def ocr_debug_image(player_id):
+    """Get the latest OCR debug image for a specific player."""
+    cam = get_camera()
+    if cam is None:
+        return "No video loaded", 404
+
+    img_bytes = cam.get_ocr_debug_image(player_id)
+    if img_bytes is None:
+        # Return a 1x1 transparent pixel placeholder
+        return Response(b'', mimetype='image/jpeg', status=204)
+
+    response = Response(img_bytes, mimetype='image/jpeg')
+    # Prevent caching so images update in real-time
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 if __name__ == '__main__':

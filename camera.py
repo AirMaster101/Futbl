@@ -166,37 +166,10 @@ class VideoCamera:
 
     def _init_ocr(self):
         """Initialize OCR for jersey number recognition."""
-        import os
-        self.debug_dir = "ocr_debug"
-        os.makedirs(self.debug_dir, exist_ok=True)
-        self.ocr_attempt_count = 0
+        # Store latest OCR debug images per player (for dashboard display)
+        self.ocr_debug_images: Dict[int, Optional[np.ndarray]] = {i: None for i in range(1, 9)}
 
-        # Try PARSeq first (state-of-the-art, fast, accurate for short text)
-        try:
-            import torch
-            import torchvision.transforms as T
-            print("Loading PARSeq model...")
-            self.parseq_model = torch.hub.load('baudm/parseq', 'parseq', pretrained=True, trust_repo=True).eval()
-            # Create image transform manually (same as SceneTextDataModule.get_transform)
-            img_size = self.parseq_model.hparams.img_size
-            self.parseq_transform = T.Compose([
-                T.Resize(img_size, T.InterpolationMode.BICUBIC),
-                T.ToTensor(),
-                T.Normalize(0.5, 0.5)
-            ])
-            self.ocr_type = 'parseq'
-            # Use GPU if available
-            self.parseq_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            self.parseq_model = self.parseq_model.to(self.parseq_device)
-            print(f"PARSeq initialized successfully (device: {self.parseq_device})")
-            self.ocr = self.parseq_model  # For compatibility checks
-            return
-        except ImportError as e:
-            print(f"PARSeq not available ({e}), trying EasyOCR...")
-        except Exception as e:
-            print(f"PARSeq init failed: {e}, trying EasyOCR...")
-
-        # Fallback to EasyOCR
+        # Try EasyOCR first (default)
         try:
             import easyocr
             self.ocr = easyocr.Reader(['en'], gpu=False, verbose=False)
@@ -204,9 +177,32 @@ class VideoCamera:
             print("EasyOCR initialized successfully")
             return
         except ImportError:
-            print("EasyOCR not available, trying PaddleOCR...")
+            print("EasyOCR not available, trying PARSeq...")
         except Exception as e:
-            print(f"EasyOCR init failed: {e}, trying PaddleOCR...")
+            print(f"EasyOCR init failed: {e}, trying PARSeq...")
+
+        # Fallback to PARSeq
+        try:
+            import torch
+            import torchvision.transforms as T
+            print("Loading PARSeq model...")
+            self.parseq_model = torch.hub.load('baudm/parseq', 'parseq', pretrained=True, trust_repo=True).eval()
+            img_size = self.parseq_model.hparams.img_size
+            self.parseq_transform = T.Compose([
+                T.Resize(img_size, T.InterpolationMode.BICUBIC),
+                T.ToTensor(),
+                T.Normalize(0.5, 0.5)
+            ])
+            self.ocr_type = 'parseq'
+            self.parseq_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self.parseq_model = self.parseq_model.to(self.parseq_device)
+            print(f"PARSeq initialized successfully (device: {self.parseq_device})")
+            self.ocr = self.parseq_model
+            return
+        except ImportError as e:
+            print(f"PARSeq not available ({e}), trying PaddleOCR...")
+        except Exception as e:
+            print(f"PARSeq init failed: {e}, trying PaddleOCR...")
 
         # Fallback to PaddleOCR
         try:
@@ -795,6 +791,9 @@ class VideoCamera:
 
         # Upscale for OCR
         upscaled = self._upscale_for_ocr(torso)
+
+        # Store debug image for dashboard display
+        self.ocr_debug_images[player.player_id] = upscaled.copy()
 
         # Run OCR with team-specific preprocessing
         number, confidence = self._run_ocr(upscaled, player.team)
@@ -1506,7 +1505,7 @@ class VideoCamera:
 
         return annotated
 
-    def get_stats(self) -> dict:
+    def get_stats(self, include_ocr_images: bool = False) -> dict:
         """Return current statistics for the UI."""
         with self.lock:
             players_data = []
@@ -1540,13 +1539,49 @@ class VideoCamera:
                     'team': team_name
                 })
 
+            # Get OCR debug images as base64 (only if requested)
+            ocr_images = {}
+            if include_ocr_images and hasattr(self, 'ocr_debug_images'):
+                import base64
+                for pid in range(1, 9):
+                    img = self.ocr_debug_images.get(pid)
+                    if img is not None:
+                        try:
+                            _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                            ocr_images[str(pid)] = base64.b64encode(buffer).decode('utf-8')
+                        except:
+                            pass
+
             return {
                 'current_frame': self.current_frame,
                 'total_frames': self.total_frames,
                 'fps': self.fps,
                 'is_playing': self.is_playing,
-                'players': players_data
+                'players': players_data,
+                'ocr_images': ocr_images
             }
+
+    def get_ocr_debug_image(self, player_id: int) -> Optional[bytes]:
+        """Get the latest OCR debug image for a player as JPEG bytes."""
+        if player_id < 1 or player_id > 8:
+            return None
+
+        # Don't use the main lock here - OCR debug images are just for display
+        # and we don't want to block while video is processing
+        try:
+            if not hasattr(self, 'ocr_debug_images'):
+                return None
+            img = self.ocr_debug_images.get(player_id)
+            if img is None:
+                return None
+
+            # Make a copy to avoid race conditions
+            img_copy = img.copy()
+            # Encode as JPEG
+            _, buffer = cv2.imencode('.jpg', img_copy, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            return buffer.tobytes()
+        except Exception:
+            return None
 
     def toggle_play(self) -> bool:
         """Toggle play/pause state. Returns new state."""

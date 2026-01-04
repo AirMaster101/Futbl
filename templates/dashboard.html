@@ -38,16 +38,16 @@
 
         .controls-panel {
             background: rgba(26, 71, 42, 0.9);
-            border-radius: 10px;
-            padding: 20px;
-            margin-top: 20px;
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin-top: 10px;
         }
 
         .btn-control {
-            width: 60px;
-            height: 60px;
+            width: 40px;
+            height: 40px;
             border-radius: 50%;
-            font-size: 24px;
+            font-size: 16px;
             border: none;
             transition: all 0.3s ease;
         }
@@ -88,12 +88,12 @@
         }
 
         .frame-counter {
-            font-size: 18px;
-            margin-bottom: 20px;
+            font-size: 14px;
+            margin-bottom: 5px;
         }
 
         .frame-current {
-            font-size: 36px;
+            font-size: 20px;
             font-weight: bold;
             color: #28a745;
         }
@@ -248,8 +248,8 @@
         }
 
         .seek-slider-container {
-            margin-top: 15px;
-            padding: 10px 0;
+            margin-top: 5px;
+            padding: 5px 0;
         }
 
         .seek-slider {
@@ -295,15 +295,15 @@
         .seek-controls {
             display: flex;
             align-items: center;
-            gap: 15px;
-            margin-top: 10px;
+            gap: 10px;
+            margin-top: 5px;
         }
 
         .btn-seek {
-            width: 36px;
-            height: 36px;
+            width: 28px;
+            height: 28px;
             border-radius: 50%;
-            font-size: 14px;
+            font-size: 12px;
             border: none;
             background: rgba(255, 255, 255, 0.2);
             color: #fff;
@@ -321,9 +321,9 @@
         }
 
         .btn-seek-large {
-            width: 44px;
-            height: 44px;
-            font-size: 12px;
+            width: 32px;
+            height: 32px;
+            font-size: 10px;
             letter-spacing: -2px;
         }
 
@@ -445,6 +445,107 @@
             background: rgba(255, 255, 255, 0.2);
             margin-left: 10px;
         }
+
+        .ocr-debug-panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 10px;
+        }
+
+        .ocr-debug-panel h6 {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+
+        .ocr-debug-grid {
+            display: flex;
+            gap: 8px;
+        }
+
+        .ocr-debug-team {
+            flex: 1;
+        }
+
+        .ocr-debug-team-label {
+            font-size: 10px;
+            font-weight: bold;
+            text-align: center;
+            padding: 2px 0;
+            margin-bottom: 4px;
+            border-radius: 3px;
+        }
+
+        .ocr-debug-team-label.red {
+            background: #dc3545;
+            color: #fff;
+        }
+
+        .ocr-debug-team-label.trq {
+            background: #20c997;
+            color: #000;
+        }
+
+        .ocr-debug-players {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 4px;
+        }
+
+        .ocr-debug-item {
+            text-align: center;
+        }
+
+        .ocr-debug-item img {
+            width: 100%;
+            height: 70px;
+            object-fit: cover;
+            background: #000;
+            border-radius: 3px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .ocr-debug-item .player-label {
+            font-size: 9px;
+            color: #888;
+            margin-top: 2px;
+        }
+
+        .ocr-debug-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .ocr-debug-toggle label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            font-size: 12px;
+            color: #aaa;
+        }
+
+        .ocr-debug-toggle input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .ocr-debug-toggle .perf-warning {
+            font-size: 10px;
+            color: #ffc107;
+        }
+
+        .ocr-debug-content {
+            display: none;
+        }
+
+        .ocr-debug-content.visible {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -491,6 +592,63 @@
                                 </div>
                                 <button class="btn-seek" id="seekFwd1Btn" title="Forward 1 frame">▶</button>
                                 <button class="btn-seek btn-seek-large" id="seekFwdBtn" title="Forward 30 frames">⏩</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- OCR Debug Panel -->
+                <div class="ocr-debug-panel">
+                    <div class="ocr-debug-toggle">
+                        <label>
+                            <input type="checkbox" id="ocrDebugToggle">
+                            <span>Show OCR Input Images</span>
+                        </label>
+                        <span class="perf-warning">Reduces performance</span>
+                    </div>
+                    <div class="ocr-debug-content" id="ocrDebugContent">
+                        <div class="ocr-debug-grid">
+                            <div class="ocr-debug-team">
+                                <div class="ocr-debug-team-label red">RED (P1-P4)</div>
+                                <div class="ocr-debug-players">
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug1" alt="P1">
+                                        <div class="player-label">P1</div>
+                                    </div>
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug2" alt="P2">
+                                        <div class="player-label">P2</div>
+                                    </div>
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug3" alt="P3">
+                                        <div class="player-label">P3</div>
+                                    </div>
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug4" alt="P4">
+                                        <div class="player-label">P4</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="ocr-debug-team">
+                                <div class="ocr-debug-team-label trq">TRQ (P5-P8)</div>
+                                <div class="ocr-debug-players">
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug5" alt="P5">
+                                        <div class="player-label">P5</div>
+                                    </div>
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug6" alt="P6">
+                                        <div class="player-label">P6</div>
+                                    </div>
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug7" alt="P7">
+                                        <div class="player-label">P7</div>
+                                    </div>
+                                    <div class="ocr-debug-item">
+                                        <img id="ocrDebug8" alt="P8">
+                                        <div class="player-label">P8</div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -587,7 +745,9 @@
 
         // Poll for status updates
         function updateStatus() {
-            fetch('/status')
+            // Include OCR images only when debug panel is enabled
+            const ocrParam = (typeof ocrDebugEnabled !== 'undefined' && ocrDebugEnabled) ? '?ocr=1' : '';
+            fetch('/status' + ocrParam)
                 .then(response => response.json())
                 .then(data => {
                     // Update frame counter
@@ -609,6 +769,11 @@
 
                     // Update player table
                     updatePlayerTable(data.players);
+
+                    // Update OCR debug images
+                    if (data.ocr_images) {
+                        updateOcrDebugImages(data.ocr_images);
+                    }
                 })
                 .catch(err => console.error('Status fetch error:', err));
         }
@@ -788,8 +953,29 @@
             }
         });
 
+        // OCR Debug Images toggle
+        const ocrDebugToggle = document.getElementById('ocrDebugToggle');
+        const ocrDebugContent = document.getElementById('ocrDebugContent');
+        let ocrDebugEnabled = false;
+
+        ocrDebugToggle.addEventListener('change', function() {
+            ocrDebugEnabled = this.checked;
+            ocrDebugContent.classList.toggle('visible', ocrDebugEnabled);
+        });
+
+        // OCR Debug Images are now included in the status response as base64
+        function updateOcrDebugImages(ocrImages) {
+            if (!ocrDebugEnabled || !ocrImages) return;
+            for (let i = 1; i <= 8; i++) {
+                const imgEl = document.getElementById('ocrDebug' + i);
+                if (imgEl && ocrImages[i]) {
+                    imgEl.src = 'data:image/jpeg;base64,' + ocrImages[i];
+                }
+            }
+        }
+
         // Start polling
-        setInterval(updateStatus, 1000);
+        setInterval(updateStatus, 500);
         updateStatus();
 
         // OCR Engine Selection
